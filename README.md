@@ -60,5 +60,5 @@ Phase 1 — Network Reconnaissance: nmap full-port scan from Kali to map the att
 
 
 
-Phase 2 — SSH Brute Force: Hydra (primary) and Medusa (fallback).
+Phase 2 — SSH Brute Force: Hydra (primary) and Medusa (fallback).  
 
